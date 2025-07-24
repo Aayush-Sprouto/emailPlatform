@@ -11,7 +11,7 @@ import {
   Type,
   Image,
   Square,
-  Button as ButtonIcon,
+  RectangleHorizontal as ButtonIcon,
   Divide,
   Settings,
   Trash2,
