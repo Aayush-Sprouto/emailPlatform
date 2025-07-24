@@ -1,14 +1,24 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
+from pydantic import BaseModel, Field, EmailStr, validator
+from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from enum import Enum
+import asyncio
+import hashlib
+import secrets
+from email.mime.text import MimeText
+from email.mime.multipart import MimeMultipart
+import smtplib
+import aiosmtplib
+import json
 
 
 ROOT_DIR = Path(__file__).parent
@@ -20,13 +30,169 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
-app = FastAPI()
+app = FastAPI(title="EmailPlatform API", description="World-class email platform API", version="1.0.0")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# Security
+security = HTTPBearer()
 
-# Define Models
+# Email Status Enum
+class EmailStatus(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    SENT = "sent"
+    DELIVERED = "delivered"
+    BOUNCED = "bounced"
+    FAILED = "failed"
+    COMPLAINED = "complained"
+
+class EmailProvider(str, Enum):
+    SENDGRID = "sendgrid"
+    AWS_SES = "aws_ses"
+    POSTMARK = "postmark"
+    SMTP = "smtp"
+
+# MongoDB Models
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: EmailStr
+    password_hash: str
+    name: str
+    company: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_active: bool = True
+    email_quota: int = 10000  # Monthly email quota
+    emails_sent_this_month: int = 0
+    plan_type: str = "free"  # free, pro, enterprise
+
+class ApiKey(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    key: str = Field(default_factory=lambda: f"ep_{secrets.token_urlsafe(32)}")
+    key_hash: str = ""
+    user_id: str
+    name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_used: Optional[datetime] = None
+    is_active: bool = True
+    permissions: List[str] = ["email:send", "email:read"]
+
+class EmailTemplate(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    name: str
+    subject: str
+    html_content: str
+    text_content: Optional[str] = None
+    variables: List[str] = []  # Template variables like {{name}}, {{company}}
+    category: str = "general"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_active: bool = True
+
+class EmailAttachment(BaseModel):
+    filename: str
+    content_type: str
+    content: str  # Base64 encoded content
+    size: int
+
+class EmailRecipient(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+    type: str = "to"  # to, cc, bcc
+
+class EmailLog(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    api_key_id: Optional[str] = None
+    campaign_id: Optional[str] = None
+    template_id: Optional[str] = None
+    
+    # Email Details
+    from_email: EmailStr
+    from_name: Optional[str] = None
+    recipients: List[EmailRecipient]
+    subject: str
+    html_content: Optional[str] = None
+    text_content: Optional[str] = None
+    attachments: List[EmailAttachment] = []
+    
+    # Tracking
+    status: EmailStatus = EmailStatus.QUEUED
+    provider: EmailProvider = EmailProvider.SMTP
+    provider_message_id: Optional[str] = None
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    queued_at: Optional[datetime] = None
+    sent_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    opened_at: Optional[datetime] = None
+    clicked_at: Optional[datetime] = None
+    bounced_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    
+    # Analytics
+    open_count: int = 0
+    click_count: int = 0
+    bounce_reason: Optional[str] = None
+    error_message: Optional[str] = None
+    
+    # Metadata
+    tags: List[str] = []
+    metadata: Dict[str, Any] = {}
+
+class EmailCampaign(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    name: str
+    template_id: Optional[str] = None
+    subject: str
+    from_email: EmailStr
+    from_name: Optional[str] = None
+    
+    # Campaign Settings
+    scheduled_at: Optional[datetime] = None
+    send_immediately: bool = True
+    
+    # Status
+    status: str = "draft"  # draft, scheduled, sending, sent, paused
+    total_recipients: int = 0
+    emails_sent: int = 0
+    emails_delivered: int = 0
+    emails_opened: int = 0
+    emails_clicked: int = 0
+    emails_bounced: int = 0
+    
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+# API Request/Response Models
+class SendEmailRequest(BaseModel):
+    from_email: EmailStr
+    from_name: Optional[str] = None
+    to: List[EmailRecipient]
+    cc: List[EmailRecipient] = []
+    bcc: List[EmailRecipient] = []
+    subject: str
+    html_content: Optional[str] = None
+    text_content: Optional[str] = None
+    attachments: List[EmailAttachment] = []
+    template_id: Optional[str] = None
+    template_variables: Dict[str, str] = {}
+    tags: List[str] = []
+    metadata: Dict[str, Any] = {}
+    send_immediately: bool = True
+    scheduled_at: Optional[datetime] = None
+
+class SendEmailResponse(BaseModel):
+    id: str
+    status: EmailStatus
+    message: str
+    created_at: datetime
+
 class StatusCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_name: str
