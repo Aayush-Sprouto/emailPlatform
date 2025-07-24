@@ -14,10 +14,7 @@ from enum import Enum
 import asyncio
 import hashlib
 import secrets
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
-import smtplib
-import aiosmtplib
+# Email imports removed - not needed for current implementation
 import json
 
 
