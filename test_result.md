@@ -213,17 +213,89 @@
         comment: "✅ Created test user, API key (ep_yl3J8t1W-xhke-pHR6rAa2qkV9QuwiGgQzPPsuDq_jc), and sample email templates for testing"
 
 ## frontend:
-  - task: "Basic Email Sending Interface"
+  - task: "Email Dashboard Layout"
     implemented: false
     working: false
     file: "App.js"
     stuck_count: 0
-    priority: "medium"
-    needs_retesting: false
+    priority: "high"
+    needs_retesting: true
     status_history:
       - working: false
         agent: "main"
-        comment: "Will build after backend infrastructure is ready"
+        comment: "Need to create professional email platform dashboard with sidebar navigation, header, and main content areas"
+
+  - task: "Drag-and-Drop Email Builder"
+    implemented: false
+    working: false
+    file: "components/EmailBuilder.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need to implement visual email builder with drag-and-drop components (headers, buttons, images, text blocks)"
+
+  - task: "Email Template Library"
+    implemented: false
+    working: false
+    file: "components/TemplateLibrary.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need to create 20+ professional templates across industries with categorization and search"
+
+  - task: "Real-time Preview System"
+    implemented: false
+    working: false
+    file: "components/EmailPreview.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need mobile/desktop preview with device switching and real-time updates"
+
+  - task: "Merge Tag System"
+    implemented: false
+    working: false
+    file: "components/MergeTagManager.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need personalization system with {{name}}, {{company}} variables and dynamic insertion"
+
+  - task: "Brand Asset Management"
+    implemented: false
+    working: false
+    file: "components/BrandManager.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need logo upload, brand color management, and asset library"
+
+  - task: "HTML/CSS Editor"
+    implemented: false
+    working: false
+    file: "components/CodeEditor.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "Need advanced code editor with syntax highlighting for custom HTML/CSS editing"
 
 ## metadata:
   created_by: "main_agent"
