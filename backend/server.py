@@ -337,7 +337,246 @@ async def startup_event():
     asyncio.create_task(process_email_queue())
 
 # API Routes
-@api_router.get("/")
+# API Routes
+
+@api_router.post("/v1/emails", response_model=SendEmailResponse)
+async def send_email(
+    request: SendEmailRequest,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKey = Depends(get_api_key),
+    user: User = Depends(get_user_from_api_key)
+):
+    """Send an email"""
+    try:
+        # Check user quota
+        if user.emails_sent_this_month >= user.email_quota:
+            raise HTTPException(
+                status_code=429, 
+                detail=f"Email quota exceeded. Current limit: {user.email_quota}"
+            )
+        
+        # Combine all recipients
+        all_recipients = request.to + request.cc + request.bcc
+        
+        # Create email log
+        email_log = EmailLog(
+            user_id=user.id,
+            api_key_id=api_key.id,
+            from_email=request.from_email,
+            from_name=request.from_name,
+            recipients=all_recipients,
+            subject=request.subject,
+            html_content=request.html_content,
+            text_content=request.text_content,
+            attachments=request.attachments,
+            tags=request.tags,
+            metadata=request.metadata,
+            template_id=request.template_id
+        )
+        
+        # Insert into database
+        await db.email_logs.insert_one(email_log.dict())
+        
+        # Add to queue for processing
+        if request.send_immediately:
+            await email_queue.put(email_log.id)
+            email_log.status = EmailStatus.QUEUED
+        
+        # Update user's email count
+        await db.users.update_one(
+            {"id": user.id},
+            {"$inc": {"emails_sent_this_month": 1}}
+        )
+        
+        return SendEmailResponse(
+            id=email_log.id,
+            status=email_log.status,
+            message="Email queued for sending",
+            created_at=email_log.created_at
+        )
+        
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/v1/emails", response_model=List[EmailLog])
+async def get_emails(
+    limit: int = 100,
+    offset: int = 0,
+    status: Optional[EmailStatus] = None,
+    user: User = Depends(get_user_from_api_key)
+):
+    """Get email logs for the authenticated user"""
+    try:
+        # Build query
+        query = {"user_id": user.id}
+        if status:
+            query["status"] = status
+        
+        # Get emails from database
+        cursor = db.email_logs.find(query).sort("created_at", -1).skip(offset).limit(limit)
+        emails = await cursor.to_list(length=limit)
+        
+        return [EmailLog(**email) for email in emails]
+        
+    except Exception as e:
+        logging.error(f"Error getting emails: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/v1/emails/{email_id}", response_model=EmailLog)
+async def get_email_by_id(
+    email_id: str,
+    user: User = Depends(get_user_from_api_key)
+):
+    """Get a specific email by ID"""
+    try:
+        email_doc = await db.email_logs.find_one({"id": email_id, "user_id": user.id})
+        if not email_doc:
+            raise HTTPException(status_code=404, detail="Email not found")
+        
+        return EmailLog(**email_doc)
+        
+    except Exception as e:
+        logging.error(f"Error getting email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/v1/templates", response_model=EmailTemplate)
+async def create_template(
+    template: EmailTemplate,
+    user: User = Depends(get_user_from_api_key)
+):
+    """Create an email template"""
+    try:
+        template.user_id = user.id
+        await db.email_templates.insert_one(template.dict())
+        return template
+        
+    except Exception as e:
+        logging.error(f"Error creating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/v1/templates", response_model=List[EmailTemplate])
+async def get_templates(
+    user: User = Depends(get_user_from_api_key)
+):
+    """Get email templates for the authenticated user"""
+    try:
+        templates = await db.email_templates.find({"user_id": user.id, "is_active": True}).to_list(100)
+        return [EmailTemplate(**template) for template in templates]
+        
+    except Exception as e:
+        logging.error(f"Error getting templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/v1/api-keys", response_model=Dict[str, Any])
+async def create_api_key(
+    name: str,
+    user: User = Depends(get_user_from_api_key)
+):
+    """Create a new API key"""
+    try:
+        api_key = ApiKey(user_id=user.id, name=name)
+        
+        # Hash the key for storage
+        api_key.key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
+        
+        # Store in database (without the plain key)
+        key_doc = api_key.dict()
+        plain_key = key_doc.pop("key")  # Remove plain key before storing
+        
+        await db.api_keys.insert_one(key_doc)
+        
+        return {
+            "id": api_key.id,
+            "name": api_key.name,
+            "key": plain_key,  # Return plain key only once
+            "created_at": api_key.created_at,
+            "message": "Store this key securely - it won't be shown again"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error creating API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/v1/api-keys", response_model=List[Dict[str, Any]])
+async def get_api_keys(
+    user: User = Depends(get_user_from_api_key)
+):
+    """Get API keys for the authenticated user (without showing the actual keys)"""
+    try:
+        keys = await db.api_keys.find({"user_id": user.id, "is_active": True}).to_list(100)
+        
+        # Remove sensitive information
+        safe_keys = []
+        for key in keys:
+            safe_keys.append({
+                "id": key["id"],
+                "name": key["name"],
+                "created_at": key["created_at"],
+                "last_used": key.get("last_used"),
+                "permissions": key["permissions"]
+            })
+        
+        return safe_keys
+        
+    except Exception as e:
+        logging.error(f"Error getting API keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/v1/api-keys/{key_id}")
+async def delete_api_key(
+    key_id: str,
+    user: User = Depends(get_user_from_api_key)
+):
+    """Delete an API key"""
+    try:
+        result = await db.api_keys.update_one(
+            {"id": key_id, "user_id": user.id},
+            {"$set": {"is_active": False}}
+        )
+        
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="API key not found")
+        
+        return {"message": "API key deleted successfully"}
+        
+    except Exception as e:
+        logging.error(f"Error deleting API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/v1/analytics/overview")
+async def get_analytics_overview(
+    user: User = Depends(get_user_from_api_key)
+):
+    """Get email analytics overview"""
+    try:
+        # Get email statistics
+        total_emails = await db.email_logs.count_documents({"user_id": user.id})
+        sent_emails = await db.email_logs.count_documents({"user_id": user.id, "status": EmailStatus.SENT})
+        delivered_emails = await db.email_logs.count_documents({"user_id": user.id, "status": EmailStatus.DELIVERED})
+        bounced_emails = await db.email_logs.count_documents({"user_id": user.id, "status": EmailStatus.BOUNCED})
+        
+        # Calculate rates
+        delivery_rate = (delivered_emails / total_emails * 100) if total_emails > 0 else 0
+        bounce_rate = (bounced_emails / total_emails * 100) if total_emails > 0 else 0
+        
+        return {
+            "total_emails": total_emails,
+            "sent_emails": sent_emails,
+            "delivered_emails": delivered_emails,
+            "bounced_emails": bounced_emails,
+            "delivery_rate": round(delivery_rate, 2),
+            "bounce_rate": round(bounce_rate, 2),
+            "quota_used": user.emails_sent_this_month,
+            "quota_limit": user.email_quota,
+            "quota_percentage": round((user.emails_sent_this_month / user.email_quota * 100), 2)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Original routes (keeping for compatibility)
 async def root():
     return {"message": "Hello World"}
 
