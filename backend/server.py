@@ -577,8 +577,11 @@ async def get_analytics_overview(
         raise HTTPException(status_code=500, detail=str(e))
 
 # Original routes (keeping for compatibility)
+# Original routes (keeping for compatibility)
+
+@api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "EmailPlatform API v1.0 - World-class email platform"}
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
@@ -591,6 +594,27 @@ async def create_status_check(input: StatusCheckCreate):
 async def get_status_checks():
     status_checks = await db.status_checks.find().to_list(1000)
     return [StatusCheck(**status_check) for status_check in status_checks]
+
+# Health check endpoint
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Check database connection
+        await db.list_collection_names()
+        
+        # Check queue status
+        queue_size = email_queue.qsize()
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow(),
+            "database": "connected",
+            "queue_size": queue_size,
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service unhealthy: {e}")
 
 # Include the router in the main app
 app.include_router(api_router)
